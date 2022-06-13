@@ -1,4 +1,3 @@
-import time
 import urllib.request
 import json
 from datetime import datetime
@@ -6,10 +5,16 @@ import pandas as pd
 import requests
 import yaml
 
-config_file = yaml.safe_load(open("config.yml"))
+with open("config.yml", encoding="utf-8") as conf:
+    config_file = yaml.safe_load(conf)
 
 
 def query_thegraph(query, variables):
+    '''
+    :param query:
+    :param variables:
+    :return:
+    '''
     req = urllib.request.Request("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3")
     req.add_header('Content-Type', 'application/json; charset=utf-8')
     jsondata = {"query": query, "variables": variables}
@@ -20,7 +25,11 @@ def query_thegraph(query, variables):
     return resp["data"]
 
 
-class poolsByFeeTVL:
+class PoolsByFeeTVL:
+    '''
+    Class to collect pools info
+    Disclaimer: Is it really needed a class here??
+    '''
     def __init__(self, pool_limit):
         # from https://github.com/atiselsts/uniswap-v3-liquidity-math/blob/master/subgraph-liquidity-query-example.py
         # https://thegraph.com/hosted-service/subgraph/ianlapham/uniswap-v3-subgraph
@@ -108,9 +117,8 @@ class poolsByFeeTVL:
             obj = query_thegraph(query=query_fee_tvl, variables=variables_tvl_fee)
             if not obj['poolDayDatas']:
                 continue
-            else:
-                pool_data = pd.json_normalize(obj["poolDayDatas"], max_level=1)
-                pool_info_list.append(pool_data)
+            pool_data = pd.json_normalize(obj["poolDayDatas"], max_level=1)
+            pool_info_list.append(pool_data)
         pool_info_list_calc = pd.concat([calc_on_pool_info(df) for df in pool_info_list])
         self.pool_info_complete = main_pools.join(pool_info_list_calc)
         # self.pool_info_complete = self.pool_info_complete[self.pool_info_complete["volatility"] > 0]
@@ -118,10 +126,18 @@ class poolsByFeeTVL:
         self.pool_info_complete.sort_values("ranking", ascending=False, inplace=True)
 
     def get_pools(self, top):
+        '''
+        :param top:
+        :return:
+        '''
         return self.pool_info_complete.head(top)
 
 
 def calc_on_pool_info(pool_info_complete):
+    '''
+    :param pool_info_complete:
+    :return:
+    '''
     pool_info_complete = pool_info_complete.set_index("pool.id")
     pool_info_complete = pool_info_complete.apply(pd.to_numeric, errors="coerce")
     pool_info_complete["fee_tier"] = round(pool_info_complete["feesUSD"]*100/pool_info_complete["volumeUSD"], 2)
@@ -143,6 +159,10 @@ def calc_on_pool_info(pool_info_complete):
 
 
 def cal_ranking(pool_info_complete):
+    '''
+    :param pool_info_complete:
+    :return:
+    '''
     # Revert the variables "the lower, the better"
     pool_info_complete["tvl_to_vol_inv"] = 1/pool_info_complete["tvl_to_vol"]
     pool_info_complete["volatility_inv"] = 1/pool_info_complete["volatility"]
@@ -157,35 +177,52 @@ def cal_ranking(pool_info_complete):
 
 
 def create_tg_msg(poo):
+    '''
+    :param poo:
+    :return:
+    '''
     poo_sorted = poo.sort_values("fees_to_tvl", ascending=False)
     poo_sorted["volatility"] = poo_sorted["volatility"].apply(lambda x: '%.1e' % x)
     poo_tg = pd.DataFrame()
-    poo_tg["Pair"] = "[" + poo_sorted["pair"] + "](https://info.uniswap.org/#/pools/" + poo_sorted.index.astype(str) + ")"
-    poo_tg["Volatility"] = "[" + poo_sorted["volatility"].astype(str) + "](https://dexscreener.com/ethereum/" + poo_sorted.index.astype(str) + ")"
-    poo_tg["Fees2TVL"] = "[" + poo_sorted["fees_to_tvl"].astype(str) + "](https://info.uniswap.org/#/pools/" + poo_sorted.index.astype(str) + ")"
-    poo_tg["Fees2TVL"] = poo_sorted["fees_to_tvl"].astype(str)
+    poo_tg["Pair"] = "[" + poo_sorted["pair"] + "]" + "(https://info.uniswap.org/#/pools/" + poo_sorted.index.astype(str) + ")"
+    poo_tg["Volatility"] = "[" + poo_sorted["volatility"] + "]" + "(https://dexscreener.com/ethereum/" + poo_sorted.index.astype(str) + ")"
+    poo_tg["Fees2TVL"] = "[" + poo_sorted["fees_to_tvl"].astype(str) + "]" + "(https://info.uniswap.org/#/pools/" + poo_sorted.index.astype(str) + ")"
+    # poo_tg["Fees2TVL"] = poo_sorted["fees_to_tvl"].astype(str)
     poo_tg["Fee"] = poo_sorted["fee_tier"]
     poo_tg["Tx"] = poo_sorted["txCount"].astype(str)
-    poo_tg.set_index("Pair", inplace=True)
-    head_num = 10
+    # poo_tg.set_index("Pair", inplace=True)
     msg = "Pair\t\t|\t\tVolatility\t\t|\t\tTx\t\t|\t\tFees2TVL"
-    for i, row in poo_tg.head(head_num).iterrows():
-        pool_msg = i + "| \U0001F4C9" + row["Volatility"] + "| \U0001F9EE" + row["Tx"] + "| \U0001F4B8" + row["Fees2TVL"]
-        msg = msg + "\n" + pool_msg
+    for i in range(len(poo_tg)):
+        pool_msg = f' {poo_tg["Pair"][i]}|' \
+                   f' \U0001F4C9 {poo_tg["Volatility"][i]} |' \
+                   f' \U0001F9EE {poo_tg["Tx"][i]} |' \
+                   f' \U0001F4B8 {poo_tg["Fees2TVL"][i]}'
+        msg = f'{msg}\n{pool_msg}'
     return msg
 
-def send_tg_msg(msg, config_file):
-    bot_token = config_file["bot_token"]
-    chatID = config_file["chatID"]
-    url = f'https://api.telegram.org/bot{bot_token}/sendMessage'
-    params = {'chat_id': chatID, 'parse_mode': "Markdown", 'disable_web_page_preview': True, 'text': "",
-              "text": msg}
-    requests.post(url, params=params)
 
-best_pools = poolsByFeeTVL(pool_limit=config_file["top_pools"])
-poo = best_pools.get_pools(10)[["pair", "txCount", "volatility", "fee_tier", "fees_to_tvl", "ranking"]]
-msg = create_tg_msg(poo)
-send_tg_msg(msg, config_file)
+def send_tg_msg(msg, conf_file):
+    '''
+    :param msg:
+    :param conf_file:
+    :return:
+    '''
+    bot_token = conf_file["bot_token"]
+    chat_id = conf_file["chatID"]
+    url = f'https://api.telegram.org/bot{bot_token}/sendMessage'
+    params = {'chat_id': chat_id, 'parse_mode': "Markdown", 'disable_web_page_preview': True,
+              "text": msg}
+    response = requests.post(url, params=params)
+    if response.status_code != 200:
+        params["text"] = response.text
+        params["parse_mode"] = "HTML"
+        requests.post(url, params=params)
+
+
+best_pools = PoolsByFeeTVL(pool_limit=config_file["top_pools"])
+top_pools = best_pools.get_pools(10)[["pair", "txCount", "volatility", "fee_tier", "fees_to_tvl", "ranking"]]
+msg_to_send = create_tg_msg(top_pools)
+send_tg_msg(msg_to_send, config_file)
 
 
 # ToDo
